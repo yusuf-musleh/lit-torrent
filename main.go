@@ -36,7 +36,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		torrent.AnnounceToTracker()
+		interval, peers := torrent.AnnounceToTracker()
+		fmt.Println("interval", interval)
+		fmt.Println("peers", peers)
+
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)

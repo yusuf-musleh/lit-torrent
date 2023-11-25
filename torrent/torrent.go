@@ -3,6 +3,8 @@ package torrent
 import (
 	"github.com/yusuf-musleh/lit-torrent/utils"
 
+	P "github.com/yusuf-musleh/lit-torrent/peers"
+
 	"fmt"
 	"os"
 	"bytes"
@@ -60,7 +62,7 @@ func (t *Torrent) GenerateTrackerRequestURL() (string) {
 }
 
 // Performs the announce request to the tracker
-func (t *Torrent) AnnounceToTracker() {
+func (t *Torrent) AnnounceToTracker() (int64, []P.Peer) {
 	url := t.GenerateTrackerRequestURL()
 	fmt.Println("url", url)
 
@@ -85,5 +87,7 @@ func (t *Torrent) AnnounceToTracker() {
 		os.Exit(1)
 	}
 
-	fmt.Println("data", data)
+	peers := P.ParsePeersFromTracker(data)
+
+	return data["interval"].(int64), peers
 }
