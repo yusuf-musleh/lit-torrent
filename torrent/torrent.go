@@ -16,11 +16,6 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 )
 
-type file struct {
-	Length int
-	Path   []string
-}
-
 type infoDict struct {
 	Name        string `bencode:"name"`
 	PieceLength int    `bencode:"piece length"`
@@ -31,26 +26,30 @@ type infoDict struct {
 type Torrent struct {
 	Announce string   `bencode:"announce"`
 	Info     infoDict `bencode:"info"`
+	InfoHash [20]byte
+	PeerId	 string
 }
 
 // Generate random peer ID for torrent session
-func (t *Torrent) GeneratePeerId() (string) {
+func (t *Torrent) GeneratePeerId() {
 	// Generate random string of length 12
 	randomStr, _ := utils.GenerateRandomString(12)
-	return "-LI1000-" + randomStr
+	t.PeerId = "-LI1000-" + randomStr
+}
+
+func (t *Torrent) GenerateInfoHashSHA1() {
+	bencodedInfo := bytes.NewBuffer([]byte{})
+	bencode.Marshal(bencodedInfo, t.Info)
+    infoHash := sha1.Sum(bencodedInfo.Bytes())
+    t.InfoHash = infoHash
 }
 
 // Build tracker request URL with required query params
 func (t *Torrent) GenerateTrackerRequestURL() (string) {
-	// Generate SHA1 hash of bencoded `info`
-	bencodedInfo := bytes.NewBuffer([]byte{})
-	bencode.Marshal(bencodedInfo, t.Info)
-    infoHash := sha1.Sum(bencodedInfo.Bytes())
-
     // Build request url query params
 	queryParams := url.Values{}
-	queryParams.Add("info_hash", string(infoHash[:]))
-	queryParams.Add("peer_id", t.GeneratePeerId())
+	queryParams.Add("info_hash", string(t.InfoHash[:]))
+	queryParams.Add("peer_id", t.PeerId)
 	queryParams.Add("port", "6889")
 	queryParams.Add("uploaded", "0")
 	queryParams.Add("downloaded", "0")
