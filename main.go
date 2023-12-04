@@ -5,6 +5,7 @@ import (
 
 	"os"
 	"fmt"
+	"sync"
 
 	bencode "github.com/jackpal/bencode-go"
 )
@@ -36,9 +37,24 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Initializing torrent data
+		torrent.GeneratePeerId()
+		torrent.GenerateInfoHashSHA1()
+
+		// Announce to Tracker to get available peers
 		interval, peers := torrent.AnnounceToTracker()
-		fmt.Println("interval", interval)
+		fmt.Println("\ninterval", interval)
 		fmt.Println("peers", peers)
+
+		// Establish connections to all available Peers in parallel
+		var wg sync.WaitGroup
+		for i := range peers {
+			wg.Add(1)
+			go peers[i].Connect(torrent.InfoHash, torrent.PeerId, &wg)
+		}
+		wg.Wait()
+
+		// TODO: Implement the rest of BitTorrent's communication protocol
 
 	} else {
 		fmt.Println("Unknown command: " + command)
