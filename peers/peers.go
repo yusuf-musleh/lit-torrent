@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"time"
 	"sync"
+	"strings"
 )
 
 const BITTORRENT_PROTOCOL = "BitTorrent protocol"
@@ -34,7 +35,13 @@ type Peer struct {
 }
 
 // Get the IP/Port pair to connect to Peer with
-func (p *Peer) GetConnectUrl() string {
+func (p *Peer) GetConnectAddr() string {
+	// Check if IPv6
+	if strings.Contains(p.IP, ":") {
+		return fmt.Sprintf("[%s]:%d", p.IP, p.Port)
+	}
+
+	// Otherwise assume it's an IPv4
 	return fmt.Sprintf("%s:%d", p.IP, p.Port)
 }
 
@@ -112,7 +119,7 @@ func (p *Peer) PerformHandshake(infoHash [20]byte, peerId string) error {
 // Establish TCP connection with Peer for communication
 func (p *Peer) Connect(infoHash [20]byte, peerId string, wg *sync.WaitGroup) {
 	defer wg.Done()
-	connectTo := p.GetConnectUrl()
+	connectTo := p.GetConnectAddr()
 	conn, connErr := net.Dial("tcp", connectTo)
 	if connErr != nil {
 		fmt.Println("Failed to connect to peer", connErr)
@@ -181,7 +188,7 @@ func ParsePeersFromTracker(trackerData map[string]interface{}) ([]Peer) {
 		// Instantiate Peer instance
 		peer := Peer{
 			PeerId: peerId,
-			IP: peerMap["ip"].(string),  // TODO: Convert non-IP format to IP
+			IP: peerMap["ip"].(string),
 			Port: peerMap["port"].(int64),
 		}
 		peers = append(peers, peer)
