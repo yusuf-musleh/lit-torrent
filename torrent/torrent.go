@@ -3,18 +3,29 @@ package torrent
 import (
 	"github.com/yusuf-musleh/lit-torrent/utils"
 
-	P "github.com/yusuf-musleh/lit-torrent/peers"
-
-	"fmt"
-	"os"
 	"bytes"
-	"strconv"
+	"crypto/sha1"
+	"fmt"
 	"net/http"
 	"net/url"
-	"crypto/sha1"
+	"os"
+	"strconv"
+	"sync"
 
 	bencode "github.com/jackpal/bencode-go"
 )
+
+type FilePiece struct {
+	Index			int
+	Length 			int
+	Hash 			string
+	PieceContent	[]byte
+}
+
+type FilePiecesQueue struct {
+	mu 			sync.Mutex
+	FilePieces	[]FilePiece
+}
 
 type infoDict struct {
 	Name        string `bencode:"name"`
@@ -37,11 +48,55 @@ func (t *Torrent) GeneratePeerId() {
 	t.PeerId = "-LI1000-" + randomStr
 }
 
+// Generate the SHA1 Hash for the content of Info in torrent file
 func (t *Torrent) GenerateInfoHashSHA1() {
 	bencodedInfo := bytes.NewBuffer([]byte{})
 	bencode.Marshal(bencodedInfo, t.Info)
     infoHash := sha1.Sum(bencodedInfo.Bytes())
     t.InfoHash = infoHash
+}
+
+// Returns number of pieces needed to download along with
+// remaining bytes in last piece
+func (t *Torrent) GetFilePiecesCount() (int, int) {
+	pieceCount := t.Info.Length / t.Info.PieceLength
+	finalPieceBytes := t.Info.Length % t.Info.PieceLength
+	return pieceCount, finalPieceBytes
+}
+
+// Returns instances of `FilePiece` containing information about
+// all the file pieces that need to be downloaded for the torrent
+func (t *Torrent) GetFilePieces() ([]FilePiece) {
+	filePieces := []FilePiece{}
+	pieceCount, finalPieceBytes := t.GetFilePiecesCount()
+	pieceCounter := 0
+	index := 0
+	hashIndex := 0
+
+	// Populate file pieces
+	for pieceCounter < pieceCount {
+		filePiece := FilePiece{
+			Index: index,
+			Length: t.Info.PieceLength,
+			Hash: t.Info.Pieces[hashIndex:hashIndex+20],
+		}
+		filePieces = append(filePieces, filePiece)
+		pieceCounter += 1
+		index += t.Info.PieceLength
+		hashIndex += 20
+	}
+
+	// Populate last remaining piece
+	if finalPieceBytes > 0 {
+		filePiece := FilePiece{
+			Index: index,
+			Length: finalPieceBytes,
+			Hash: t.Info.Pieces[hashIndex:],
+		}
+		filePieces = append(filePieces, filePiece)
+	}
+
+	return filePieces
 }
 
 // Build tracker request URL with required query params
@@ -61,7 +116,7 @@ func (t *Torrent) GenerateTrackerRequestURL() (string) {
 }
 
 // Performs the announce request to the tracker
-func (t *Torrent) AnnounceToTracker() (int64, []P.Peer) {
+func (t *Torrent) AnnounceToTracker() (int64, map[string]interface{}) {
 	url := t.GenerateTrackerRequestURL()
 	fmt.Println("url", url)
 
@@ -86,7 +141,5 @@ func (t *Torrent) AnnounceToTracker() (int64, []P.Peer) {
 		os.Exit(1)
 	}
 
-	peers := P.ParsePeersFromTracker(data)
-
-	return data["interval"].(int64), peers
+	return data["interval"].(int64), data
 }

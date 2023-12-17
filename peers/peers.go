@@ -1,6 +1,8 @@
 package peers
 
 import (
+	T "github.com/yusuf-musleh/lit-torrent/torrent"
+
 	"fmt"
 	"os"
 	"net"
@@ -117,7 +119,9 @@ func (p *Peer) PerformHandshake(infoHash [20]byte, peerId string) error {
 }
 
 // Establish TCP connection with Peer for communication
-func (p *Peer) Connect(infoHash [20]byte, peerId string, wg *sync.WaitGroup) {
+func (p *Peer) Connect(
+	infoHash [20]byte, peerId string, wg *sync.WaitGroup, filePieceQ *T.FilePiecesQueue,
+) {
 	defer wg.Done()
 	connectTo := p.GetConnectAddr()
 	conn, connErr := net.Dial("tcp", connectTo)
