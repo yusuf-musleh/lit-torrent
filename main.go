@@ -48,20 +48,15 @@ func main() {
 			FilePieces: filePieces,
 		}
 
-		fmt.Println("filePiecesQueue", filePiecesQueue)
-
 		// Announce to Tracker to get available peers
 		interval, data := torrent.AnnounceToTracker()
 		fmt.Println("\ninterval", interval)
 		peers := P.ParsePeersFromTracker(data)
-		fmt.Println("peers", peers)
-
-		// TODO: Pass in a reference to the jobs queue to the peers.Connect method so they can
-		// interact with it
 
 		// Establish connections to all available Peers in parallel
 		var wg sync.WaitGroup
-		for i := range peers {
+		// TODO: Remove this limitation onces
+		for i := range peers[1:2] {
 			wg.Add(1)
 			go peers[i].Connect(torrent.InfoHash, torrent.PeerId, &wg, &filePiecesQueue)
 		}

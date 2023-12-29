@@ -15,16 +15,56 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 )
 
+const BLOCK_SIZE = 16384 // 16kiB
+
 type FilePiece struct {
 	Index			int
 	Length 			int
 	Hash 			string
+	BlockSizes		[]int
 	PieceContent	[]byte
+}
+
+// Returns the sizes of the blocks that need to be downloaded
+// that add up to the FilePiece
+func (fp *FilePiece) ComputeBlockSizes() {
+	blockSizes := []int{}
+	fullBlocks := fp.Length / BLOCK_SIZE
+	finalBlock := fp.Length % BLOCK_SIZE
+
+	for i := 0; i < fullBlocks; i++ {
+		blockSizes = append(blockSizes, BLOCK_SIZE)
+	}
+
+	if finalBlock > 0 {
+		blockSizes = append(blockSizes, finalBlock)
+	}
+
+	fp.BlockSizes = blockSizes
 }
 
 type FilePiecesQueue struct {
 	mu 			sync.Mutex
 	FilePieces	[]FilePiece
+}
+
+// Safely pop next available FilePiece from File Piece Queue
+func (queue *FilePiecesQueue) PopPiece() FilePiece {
+	var piece FilePiece
+	queue.mu.Lock()
+	if len(queue.FilePieces) > 0 {
+		piece, queue.FilePieces = queue.FilePieces[0], queue.FilePieces[1:]
+	}
+	queue.mu.Unlock()
+	return piece
+}
+
+// Safely add FilePiece to File Piece Queue, this is used to retry failed
+// attempts to download File Piece
+func (queue *FilePiecesQueue) InsertPiece(piece FilePiece) {
+	queue.mu.Lock()
+	queue.FilePieces = append(queue.FilePieces, piece)
+	queue.mu.Unlock()
 }
 
 type infoDict struct {
@@ -80,6 +120,7 @@ func (t *Torrent) GetFilePieces() ([]FilePiece) {
 			Length: t.Info.PieceLength,
 			Hash: t.Info.Pieces[hashIndex:hashIndex+20],
 		}
+		filePiece.ComputeBlockSizes()
 		filePieces = append(filePieces, filePiece)
 		pieceCounter += 1
 		index += t.Info.PieceLength
@@ -93,6 +134,7 @@ func (t *Torrent) GetFilePieces() ([]FilePiece) {
 			Length: finalPieceBytes,
 			Hash: t.Info.Pieces[hashIndex:],
 		}
+		filePiece.ComputeBlockSizes()
 		filePieces = append(filePieces, filePiece)
 	}
 

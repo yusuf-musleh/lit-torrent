@@ -3,27 +3,91 @@ package peers
 import (
 	T "github.com/yusuf-musleh/lit-torrent/torrent"
 
-	"fmt"
-	"os"
-	"net"
-	"errors"
 	"bytes"
-	"time"
-	"sync"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net"
+	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 const BITTORRENT_PROTOCOL = "BitTorrent protocol"
 const READ_BUFFER_SIZE = 1024
 
-type PeerConnectionState int
-
 const (
 	HANDSHAKING = iota + 1
 	CONNECTED
+	INTERESTED
+	CHOKED
+	UNCHOKED
 	DISCONNECTED
 )
 
+type Message struct {
+	PrefixLength	int
+	MessageId		int
+	Payload			[]int
+}
+
+// Format message to adhere to BitTorrent protocol
+func (m *Message) SerializeMsg() []byte {
+	serialized := []byte{}
+
+	// Convert prefix length to 4 byte big-endian format
+	serialized = append(serialized, make([]byte, 4)...)
+	binary.BigEndian.PutUint32(serialized, uint32(m.PrefixLength))
+
+	// Include the message ID
+	serialized = append(serialized, byte(m.MessageId))
+
+	// Convert the payload data to 4 byte big-endian format
+	payload := make([]byte, 0, 4*len(m.Payload))
+	for _, intData := range m.Payload {
+	    intBuffer := make([]byte, 4)
+	    binary.BigEndian.PutUint32(intBuffer, uint32(intData))
+	    payload = append(payload, intBuffer...)
+	}
+	// Include the converted payload data
+	serialized = append(serialized, payload...)
+
+	return serialized
+}
+
+// Convert BitTorrent message to Message struct
+func ParseMsg(peerMsg []byte) Message {
+	prefixLength := int(binary.BigEndian.Uint32(peerMsg[:4]))
+	messageId := -1 // keep-alive message
+	payload := []byte{}
+
+	// Check if it's not an empty or keep-alive message
+	if len(peerMsg) > 4 {
+		messageId = int(peerMsg[4])
+		payload = peerMsg[5:]
+	}
+
+	parsedPayload := []int{}
+	// TODO: This doesn't support the BitField payload
+	// Check if only contains 4 byte integers, otherwise don't parse it for now
+	// FIX: The following implementation is incorrect
+	isIntsOnlyPayload := (len(payload) % 4 == 0)
+	if isIntsOnlyPayload {
+		for i := 0; i < len(payload) / 4; i += 4 {
+			payloadBytes := payload[i:i+4]
+			parsedPayload = append(parsedPayload, int(binary.BigEndian.Uint32(payloadBytes)))
+		}
+	}
+
+	return Message{
+		PrefixLength: prefixLength,
+		MessageId: messageId,
+		Payload: parsedPayload,
+	}
+}
+
+type PeerConnectionState int
 type PeerConnection struct {
 	Conn 	net.Conn
 	State	PeerConnectionState
@@ -52,18 +116,24 @@ func (p *Peer) GetConnection() net.Conn {
 	return p.Connection.Conn
 }
 
-// Send messages to Peer through TCP connection
-func (p *Peer) SendMessage(message []byte) error {
-	bytesSent, err := p.GetConnection().Write(message)
+// Send the actual message bytes to Peer through the TCP connection
+func (p *Peer) SendMessageBytes(msgBytes []byte) error {
+	bytesSent, err := p.GetConnection().Write(msgBytes)
 	if err != nil {
 		fmt.Println("Failed to send message to peer", err)
 		p.Connection.State = DISCONNECTED
 		return err
 	}
 
-	fmt.Println("Bytes written:", len(message))
+	fmt.Println("Bytes written:", len(msgBytes))
 	fmt.Println("Bytes sent", bytesSent)
 	return nil
+}
+
+// Serialize and send message to Peer
+func (p *Peer) SendMessage(message Message) error {
+	serializedMsg := message.SerializeMsg()
+	return p.SendMessageBytes(serializedMsg)
 }
 
 // Generate, perform and validate handshake with Peer
@@ -77,7 +147,7 @@ func (p *Peer) PerformHandshake(infoHash [20]byte, peerId string) error {
 	handshakeData = append(handshakeData, infoHash[:]...)
 	handshakeData = append(handshakeData, []byte(peerId)...)
 
-	sendErr := p.SendMessage(handshakeData)
+	sendErr := p.SendMessageBytes(handshakeData)
 	if sendErr != nil {
 		return sendErr
 	}
@@ -118,10 +188,74 @@ func (p *Peer) PerformHandshake(infoHash [20]byte, peerId string) error {
 	return nil
 }
 
+// Send a Interested message to the Peer
+func (p *Peer) Interested() {
+	interested := Message{
+		PrefixLength: 1,
+		MessageId: 2,
+		Payload: []int{},
+	}
+
+	fmt.Println("interested", interested)
+	err := p.SendMessage(interested)
+	if err != nil {
+		fmt.Println("send interested message failed", err)
+	}
+
+	p.Connection.State = INTERESTED
+}
+
+// Send a Request message to the Peer
+func (p *Peer) Request(index int, begin int, blockSize int) {
+	request := Message{
+		PrefixLength: 13,
+		MessageId: 6,
+		Payload: []int{index, begin, blockSize},
+	}
+
+	fmt.Println("request", request)
+	err := p.SendMessage(request)
+	if err != nil {
+		fmt.Println("send request message failed", err)
+	}
+}
+
+// Reads all the bytes associated with the Block (i.e. downloading it)
+func (p *Peer) DownloadBlock(recvMessage Message, response []byte) ([]byte, error) {
+	/*
+	 * -- Example Piece message --
+	 *
+	 * Received:               [0 0 64 9 7 0 0 0 0 0 0 0 0 35 35 32 87 ...
+	 * prefixed length            |------|
+	 * message id                        ||
+     * index                               |-----|
+     * begin                                       |-----|
+     * block                                               |---------- ...
+    */
+	blockLength := recvMessage.PrefixLength - 9
+	fmt.Println("GOT A PIECE FROM PEER", recvMessage)
+	BLOCK_STARTING_INDEX := 13
+	block := response[BLOCK_STARTING_INDEX:]
+	blockBytes := len(block)
+	for blockBytes < blockLength {
+		response := make([]byte, READ_BUFFER_SIZE)
+		n, readErr := p.GetConnection().Read(response)
+		if readErr != nil {
+			fmt.Println("Failed to download block:", readErr)
+			p.Connection.State = DISCONNECTED
+			return nil, readErr
+		}
+		block = append(block, response[:n]...)
+		blockBytes += n
+	}
+	return block, nil
+}
+
 // Establish TCP connection with Peer for communication
 func (p *Peer) Connect(
-	infoHash [20]byte, peerId string, wg *sync.WaitGroup, filePieceQ *T.FilePiecesQueue,
+	infoHash [20]byte, peerId string, wg *sync.WaitGroup, filePieceQueue *T.FilePiecesQueue,
 ) {
+
 	defer wg.Done()
 	connectTo := p.GetConnectAddr()
 	conn, connErr := net.Dial("tcp", connectTo)
@@ -150,7 +284,16 @@ func (p *Peer) Connect(
 		p.Connection.State = CONNECTED
 	}
 
-	// Begin listening to messages from Peer once Handshake succeeds
+	// Send Interested message to Peer
+	p.Interested()
+
+	// Initialize required variables
+	var requestFilePiece T.FilePiece
+	var currentBlockIndex int
+	var currentBlockOffset int
+
+	// Begin listening to messages from Peer after successful Handshake
+	// and sending the Interested message
 	for (p.Connection.State != DISCONNECTED) {
 		fmt.Printf("\n[%s] Waiting messages from peer...\n", p.PeerId)
 		// Read response from the server
@@ -162,8 +305,54 @@ func (p *Peer) Connect(
 			break
 		}
 
-		fmt.Println("Received:", response[:n])
-		fmt.Println("Received (String)", string(response[:n]))
+		recvMessage := ParseMsg(response[:n])
+
+		// TODO: look into changing these to cases?
+		if recvMessage.MessageId == 0 {
+			p.Connection.State = CHOKED
+		} else if recvMessage.MessageId == 1 {
+			// If connection became unchoked request the piece
+			p.Connection.State = UNCHOKED
+			// If the requestFilePiece is zeroed out, pop from the Queue
+			// TODO: Might need a different approach for this
+			if requestFilePiece.Length == 0 {
+				requestFilePiece = filePieceQueue.PopPiece()
+				// Reset the block index/offset at the beginning of a new piece download
+				currentBlockIndex = 0
+				currentBlockOffset = 0
+			}
+
+			// Send Request message to Peer
+			p.Request(requestFilePiece.Index, currentBlockIndex, T.BLOCK_SIZE)
+
+		} else if recvMessage.MessageId == 7 {
+			// Handle receiving piece from peer
+			fmt.Println("Response prefix", response[:13])
+			block, err := p.DownloadBlock(recvMessage, response)
+			if err != nil {
+				fmt.Println("Failed to download block", err)
+			}
+
+			fmt.Println("the full block (string)", string(block))
+
+			// TODO: properly place the block into its correct spot in PieceContent
+			// requestFilePiece.PieceContent = append(requestFilePiece.PieceContent, block...)
+
+			currentBlockOffset += requestFilePiece.BlockSizes[currentBlockIndex]
+			currentBlockIndex += 1
+			if currentBlockIndex < len(requestFilePiece.BlockSizes) {
+				fmt.Println("\n\n =====requesting next block", currentBlockOffset)
+				p.Request(
+					requestFilePiece.Index,
+					currentBlockOffset,
+					requestFilePiece.BlockSizes[currentBlockIndex],
+				)
+
+			} else {
+				// No more blocks, that means we requested the whole piece
+				// TODO: we should reset the piece variable to pop the next one from the queue
+			}
+		}
 	}
 }
 
