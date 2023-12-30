@@ -45,9 +45,17 @@ func (fp *FilePiece) ComputeBlockSizes() {
 
 // Verify the integrity of the content of the downloaded piece
 // by comparing the SHA1 hash
-func (fp *FilePiece) VerifyPiece() bool {
+func (fp *FilePiece) Verify() bool {
 	hashedPieceContent := sha1.Sum(fp.PieceContent)
 	return fp.Hash == string(hashedPieceContent[:])
+}
+
+// Clear the piece content and put it back in the piece queue
+// so it can be processed again
+func (fp *FilePiece) Reset(queue *FilePiecesQueue) FilePiece {
+	fp.PieceContent = []byte{}
+	queue.InsertPiece(*fp)
+	return FilePiece{}
 }
 
 type FilePiecesQueue struct {

@@ -314,8 +314,10 @@ func (p *Peer) Connect(
 		if recvMessage.MessageId == 0 {
 			p.Connection.State = CHOKED
 		} else if recvMessage.MessageId == 1 {
-			// If connection became unchoked request the piece
+			// If connection became unchoked, pop the next available piece
+			// from the queue and begin requesting it's blocks
 			p.Connection.State = UNCHOKED
+
 			// If the requestFilePiece is zeroed out, pop from the Queue
 			// TODO: Might need a different approach for this
 			if requestFilePiece.Length == 0 {
@@ -328,7 +330,9 @@ func (p *Peer) Connect(
 			// Send Request message to Peer
 			reqErr := p.Request(requestFilePiece.Index, currentBlockIndex, T.BLOCK_SIZE)
 			if reqErr != nil {
-				// TODO: reset piece content and put it back in the queue
+				// Reset the piece if requesting the block failed
+				requestFilePiece = requestFilePiece.Reset(filePieceQueue)
+				continue
 			}
 
 		} else if recvMessage.MessageId == 7 {
@@ -337,9 +341,10 @@ func (p *Peer) Connect(
 			block, err := p.DownloadBlock(recvMessage, response)
 			if err != nil {
 				fmt.Println("Failed to download block", err)
-				// TODO: If any block fails, assume this whole piece failed
-				// to keep it simple. Clear the piece content and put it back
-				// in the piece queue so it can be processed again
+				// If any block fails, assume this whole piece failed
+				// to keep it simple.
+				requestFilePiece = requestFilePiece.Reset(filePieceQueue)
+				continue
 			}
 
 			// Add block data to the PieceContent of the FilePiece
@@ -357,16 +362,16 @@ func (p *Peer) Connect(
 					requestFilePiece.BlockSizes[currentBlockIndex],
 				)
 				if reqErr != nil {
-					// TODO: Similar to above, since request this block failed, we
-					// need to to reset and put the piece back in the queue
+					// Similar to the above reset the piece if requesting the next block failed
+					requestFilePiece = requestFilePiece.Reset(filePieceQueue)
+					continue
 				}
 
 			} else {
 				// No more blocks remain for this piece
 				// Verify the integrity of the file piece, discard if not valid
 				fmt.Println("\n\n ==== the full piece", string(requestFilePiece.PieceContent))
-				fmt.Println("the piece is:", requestFilePiece.VerifyPiece())
-				if requestFilePiece.VerifyPiece() {
+				if requestFilePiece.Verify() {
 					// TODO: Write it main file buffer, but ideally disk
 				} else {
 					// TODO: discard the file piece content, put it back in the queue
