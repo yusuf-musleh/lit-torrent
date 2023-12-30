@@ -200,13 +200,14 @@ func (p *Peer) Interested() {
 	err := p.SendMessage(interested)
 	if err != nil {
 		fmt.Println("send interested message failed", err)
+		p.Connection.State = DISCONNECTED
+	} else {
+		p.Connection.State = INTERESTED
 	}
-
-	p.Connection.State = INTERESTED
 }
 
 // Send a Request message to the Peer
-func (p *Peer) Request(index int, begin int, blockSize int) {
+func (p *Peer) Request(index int, begin int, blockSize int) error {
 	request := Message{
 		PrefixLength: 13,
 		MessageId: 6,
@@ -217,7 +218,9 @@ func (p *Peer) Request(index int, begin int, blockSize int) {
 	err := p.SendMessage(request)
 	if err != nil {
 		fmt.Println("send request message failed", err)
+		p.Connection.State = DISCONNECTED
 	}
+	return err
 }
 
 // Reads all the bytes associated with the Block (i.e. downloading it)
@@ -323,7 +326,10 @@ func (p *Peer) Connect(
 			}
 
 			// Send Request message to Peer
-			p.Request(requestFilePiece.Index, currentBlockIndex, T.BLOCK_SIZE)
+			reqErr := p.Request(requestFilePiece.Index, currentBlockIndex, T.BLOCK_SIZE)
+			if reqErr != nil {
+				// TODO: reset piece content and put it back in the queue
+			}
 
 		} else if recvMessage.MessageId == 7 {
 			// Handle receiving piece from peer
@@ -331,25 +337,41 @@ func (p *Peer) Connect(
 			block, err := p.DownloadBlock(recvMessage, response)
 			if err != nil {
 				fmt.Println("Failed to download block", err)
+				// TODO: If any block fails, assume this whole piece failed
+				// to keep it simple. Clear the piece content and put it back
+				// in the piece queue so it can be processed again
 			}
 
-			fmt.Println("the full block (string)", string(block))
+			// Add block data to the PieceContent of the FilePiece
+			requestFilePiece.PieceContent = append(requestFilePiece.PieceContent, block...)
 
-			// TODO: properly place the block into its correct spot in PieceContent
-			// requestFilePiece.PieceContent = append(requestFilePiece.PieceContent, block...)
-
+			// Increment block offset and index
 			currentBlockOffset += requestFilePiece.BlockSizes[currentBlockIndex]
 			currentBlockIndex += 1
 			if currentBlockIndex < len(requestFilePiece.BlockSizes) {
+				// Request the next block
 				fmt.Println("\n\n =====requesting next block", currentBlockOffset)
-				p.Request(
+				reqErr := p.Request(
 					requestFilePiece.Index,
 					currentBlockOffset,
 					requestFilePiece.BlockSizes[currentBlockIndex],
 				)
+				if reqErr != nil {
+					// TODO: Similar to above, since request this block failed, we
+					// need to to reset and put the piece back in the queue
+				}
 
 			} else {
-				// No more blocks, that means we requested the whole piece
+				// No more blocks remain for this piece
+				// Verify the integrity of the file piece, discard if not valid
+				fmt.Println("\n\n ==== the full piece", string(requestFilePiece.PieceContent))
+				fmt.Println("the piece is:", requestFilePiece.VerifyPiece())
+				if requestFilePiece.VerifyPiece() {
+					// TODO: Write it main file buffer, but ideally disk
+				} else {
+					// TODO: discard the file piece content, put it back in the queue
+				}
+
 				// TODO: we should reset the piece variable to pop the next one from the queue
 			}
 		}

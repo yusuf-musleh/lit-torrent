@@ -43,6 +43,13 @@ func (fp *FilePiece) ComputeBlockSizes() {
 	fp.BlockSizes = blockSizes
 }
 
+// Verify the integrity of the content of the downloaded piece
+// by comparing the SHA1 hash
+func (fp *FilePiece) VerifyPiece() bool {
+	hashedPieceContent := sha1.Sum(fp.PieceContent)
+	return fp.Hash == string(hashedPieceContent[:])
+}
+
 type FilePiecesQueue struct {
 	mu 			sync.Mutex
 	FilePieces	[]FilePiece
