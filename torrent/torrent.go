@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"errors"
 
 	bencode "github.com/jackpal/bencode-go"
 )
@@ -64,14 +65,17 @@ type FilePiecesQueue struct {
 }
 
 // Safely pop next available FilePiece from File Piece Queue
-func (queue *FilePiecesQueue) PopPiece() FilePiece {
+func (queue *FilePiecesQueue) PopPiece() (FilePiece, error) {
 	var piece FilePiece
+	var err error
 	queue.mu.Lock()
 	if len(queue.FilePieces) > 0 {
 		piece, queue.FilePieces = queue.FilePieces[0], queue.FilePieces[1:]
+	} else {
+		err = errors.New("No more pieces to process")
 	}
 	queue.mu.Unlock()
-	return piece
+	return piece, err
 }
 
 // Safely add FilePiece to File Piece Queue, this is used to retry failed
@@ -138,7 +142,7 @@ func (t *Torrent) GetFilePieces() ([]FilePiece) {
 		filePiece.ComputeBlockSizes()
 		filePieces = append(filePieces, filePiece)
 		pieceCounter += 1
-		index += t.Info.PieceLength
+		index += 1
 		hashIndex += 20
 	}
 

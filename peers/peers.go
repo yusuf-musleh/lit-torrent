@@ -298,6 +298,29 @@ func (p *Peer) Connect(
 	// Begin listening to messages from Peer after successful Handshake
 	// and sending the Interested message
 	for (p.Connection.State != DISCONNECTED) {
+		// If connection became unchoked, pop the next available piece
+		// from the queue and begin requesting it's blocks
+		if p.Connection.State == UNCHOKED && requestFilePiece.Length == 0 {
+			// If the requestFilePiece is zeroed out, pop from the Queue
+			nextFilePiece, popErr := filePieceQueue.PopPiece()
+			if popErr != nil {
+				p.Connection.State = DISCONNECTED
+				break
+			}
+			requestFilePiece = nextFilePiece
+			// Reset the block index/offset at the beginning of a new piece download
+			currentBlockIndex = 0
+			currentBlockOffset = 0
+
+			// Send Request message to Peer
+			reqErr := p.Request(requestFilePiece.Index, currentBlockIndex, T.BLOCK_SIZE)
+			if reqErr != nil {
+				// Reset the piece if requesting the block failed
+				requestFilePiece = requestFilePiece.Reset(filePieceQueue)
+				continue
+			}
+		}
+
 		fmt.Printf("\n[%s] Waiting messages from peer...\n", p.PeerId)
 		// Read response from the server
 		response := make([]byte, READ_BUFFER_SIZE)
@@ -314,27 +337,7 @@ func (p *Peer) Connect(
 		if recvMessage.MessageId == 0 {
 			p.Connection.State = CHOKED
 		} else if recvMessage.MessageId == 1 {
-			// If connection became unchoked, pop the next available piece
-			// from the queue and begin requesting it's blocks
 			p.Connection.State = UNCHOKED
-
-			// If the requestFilePiece is zeroed out, pop from the Queue
-			// TODO: Might need a different approach for this
-			if requestFilePiece.Length == 0 {
-				requestFilePiece = filePieceQueue.PopPiece()
-				// Reset the block index/offset at the beginning of a new piece download
-				currentBlockIndex = 0
-				currentBlockOffset = 0
-			}
-
-			// Send Request message to Peer
-			reqErr := p.Request(requestFilePiece.Index, currentBlockIndex, T.BLOCK_SIZE)
-			if reqErr != nil {
-				// Reset the piece if requesting the block failed
-				requestFilePiece = requestFilePiece.Reset(filePieceQueue)
-				continue
-			}
-
 		} else if recvMessage.MessageId == 7 {
 			// Handle receiving piece from peer
 			fmt.Println("Response prefix", response[:13])
@@ -370,14 +373,17 @@ func (p *Peer) Connect(
 			} else {
 				// No more blocks remain for this piece
 				// Verify the integrity of the file piece, discard if not valid
-				fmt.Println("\n\n ==== the full piece", string(requestFilePiece.PieceContent))
 				if requestFilePiece.Verify() {
 					// TODO: Write it main file buffer, but ideally disk
+					fmt.Println("\n\n ==== the full piece", string(requestFilePiece.PieceContent))
 				} else {
-					// TODO: discard the file piece content, put it back in the queue
+					// Discard the file piece content, put it back in the queue
+					requestFilePiece = requestFilePiece.Reset(filePieceQueue)
+					continue
 				}
 
-				// TODO: we should reset the piece variable to pop the next one from the queue
+				// Reset the piece variable to pop the next one from the queue
+				requestFilePiece = T.FilePiece{}
 			}
 		}
 	}
