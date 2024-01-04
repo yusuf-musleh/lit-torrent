@@ -22,6 +22,7 @@ type FilePiece struct {
 	Index			int
 	Length 			int
 	Hash 			string
+	FileOffset		int
 	BlockSizes		[]int
 	PieceContent	[]byte
 }
@@ -69,6 +70,8 @@ func (queue *FilePiecesQueue) PopPiece() (FilePiece, error) {
 	var piece FilePiece
 	var err error
 	queue.mu.Lock()
+	// TODO: Implement proper progress logging, including peer count
+	fmt.Println("Pieces Remaining:", len(queue.FilePieces))
 	if len(queue.FilePieces) > 0 {
 		piece, queue.FilePieces = queue.FilePieces[0], queue.FilePieces[1:]
 	} else {
@@ -115,6 +118,62 @@ func (t *Torrent) GenerateInfoHashSHA1() {
     t.InfoHash = infoHash
 }
 
+// Decode .torrent file and populate its values in Torrent struct
+// and build queue for file pieces that need to be downloaded, and
+// initializes the download file to write to with downloaded data
+func ParseTorrentFile(filePath string) (Torrent, *FilePiecesQueue, os.File) {
+	torrentFile, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	defer torrentFile.Close()
+
+	torrent := Torrent{}
+
+	err = bencode.Unmarshal(torrentFile, &torrent)
+
+	if err != nil {
+		fmt.Println("Invalid .torrent file:", err)
+		os.Exit(1)
+	}
+
+	// Initialize torrent data
+	torrent.GeneratePeerId()
+	torrent.GenerateInfoHashSHA1()
+
+	fmt.Println("Downloading:", torrent.Info.Name)
+
+	// Build queue for pieces that need to be downloaded
+	filePieces := torrent.GetFilePieces()
+	filePiecesQueue := FilePiecesQueue{
+		FilePieces: filePieces,
+	}
+
+	// Initializing the download file
+	file := torrent.InitializeDownloadFile()
+
+	return torrent, &filePiecesQueue, file
+}
+
+// Initialize file to download to with the appropriate length
+func (t *Torrent) InitializeDownloadFile() os.File {
+	file, fileErr := os.Create(t.Info.Name)
+	if fileErr != nil {
+		fmt.Println("Failed to create file", fileErr)
+		os.Exit(1)
+	}
+
+	truncErr := file.Truncate(int64(t.Info.Length))
+	if truncErr != nil {
+		fmt.Println("Failed to initialize file", truncErr)
+		os.Exit(1)
+	}
+
+	return *file
+}
+
 // Returns number of pieces needed to download along with
 // remaining bytes in last piece
 func (t *Torrent) GetFilePiecesCount() (int, int) {
@@ -131,6 +190,7 @@ func (t *Torrent) GetFilePieces() ([]FilePiece) {
 	pieceCounter := 0
 	index := 0
 	hashIndex := 0
+	offset := 0
 
 	// Populate file pieces
 	for pieceCounter < pieceCount {
@@ -138,12 +198,14 @@ func (t *Torrent) GetFilePieces() ([]FilePiece) {
 			Index: index,
 			Length: t.Info.PieceLength,
 			Hash: t.Info.Pieces[hashIndex:hashIndex+20],
+			FileOffset: offset,
 		}
 		filePiece.ComputeBlockSizes()
 		filePieces = append(filePieces, filePiece)
 		pieceCounter += 1
 		index += 1
 		hashIndex += 20
+		offset += t.Info.PieceLength
 	}
 
 	// Populate last remaining piece
@@ -152,6 +214,7 @@ func (t *Torrent) GetFilePieces() ([]FilePiece) {
 			Index: index,
 			Length: finalPieceBytes,
 			Hash: t.Info.Pieces[hashIndex:],
+			FileOffset: offset,
 		}
 		filePiece.ComputeBlockSizes()
 		filePieces = append(filePieces, filePiece)
@@ -176,10 +239,10 @@ func (t *Torrent) GenerateTrackerRequestURL() (string) {
 	return url
 }
 
-// Performs the announce request to the tracker
+// Performs the announce request to the tracker returning interval
+// and peer data
 func (t *Torrent) AnnounceToTracker() (int64, map[string]interface{}) {
 	url := t.GenerateTrackerRequestURL()
-	fmt.Println("url", url)
 
 	response, err := http.Get(url)
 
