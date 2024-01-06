@@ -27,6 +27,7 @@ func main() {
 			peers := P.ParsePeersFromTracker(data)
 
 			// Establish connections to all available Peers in parallel
+			fmt.Println("Connecting to peers...")
 			var wg sync.WaitGroup
 			for i := range peers {
 				wg.Add(1)

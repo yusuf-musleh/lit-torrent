@@ -240,7 +240,6 @@ func (p *Peer) Connect(
 	connectTo := p.GetConnectAddr()
 	conn, connErr := net.Dial("tcp", connectTo)
 	if connErr != nil {
-		fmt.Println("Failed to connect to peer", connErr)
 		return
 	}
 
@@ -297,7 +296,6 @@ func (p *Peer) Connect(
 		response := make([]byte, READ_BUFFER_SIZE)
 		n, readErr := p.GetConnection().Read(response)
 		if readErr != nil {
-			fmt.Println("Failed to read from the connection:", readErr)
 			p.Connection.State = DISCONNECTED
 			// Reset FilePiece if it fails while being processed
 			if requestFilePiece.Length != 0 {
@@ -347,7 +345,13 @@ func (p *Peer) Connect(
 				// Verify the integrity of the file piece, discard if not valid
 				if requestFilePiece.Verify() {
 					// Write downloaded Piece Content to file at the correct offset
-					file.WriteAt(requestFilePiece.PieceContent, int64(requestFilePiece.FileOffset))
+					_, writeErr := file.WriteAt(requestFilePiece.PieceContent, int64(requestFilePiece.FileOffset))
+					if writeErr != nil {
+						requestFilePiece = requestFilePiece.Reset(filePieceQueue)
+						continue
+					}
+					filePieceQueue.IncrementCompleted()
+					filePieceQueue.LogProgress()
 				} else {
 					// Discard the file piece content, put it back in the queue
 					requestFilePiece = requestFilePiece.Reset(filePieceQueue)

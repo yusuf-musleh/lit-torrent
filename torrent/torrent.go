@@ -12,11 +12,13 @@ import (
 	"strconv"
 	"sync"
 	"errors"
+	"time"
 
 	bencode "github.com/jackpal/bencode-go"
 )
 
 const BLOCK_SIZE = 16384 // 16kiB
+const TIME_FORMAT = "2006-01-02 15:04:05"
 
 type FilePiece struct {
 	Index			int
@@ -61,8 +63,29 @@ func (fp *FilePiece) Reset(queue *FilePiecesQueue) FilePiece {
 }
 
 type FilePiecesQueue struct {
-	mu 			sync.Mutex
-	FilePieces	[]FilePiece
+	mu 				sync.Mutex
+	FilePieces		[]FilePiece
+	TotalPieceCount	int
+	Completed 		int
+}
+
+// Safely increments the counter for pieces download complete
+func (queue *FilePiecesQueue) IncrementCompleted() {
+	queue.mu.Lock()
+	queue.Completed += 1
+	queue.mu.Unlock()
+}
+
+// Safely log the current progress of the download
+func (queue *FilePiecesQueue) LogProgress() {
+	now := time.Now()
+	formattedTime := now.Format(TIME_FORMAT)
+	queue.mu.Lock()
+	completed := float64(queue.Completed)
+	percentCompleted := (completed / float64(queue.TotalPieceCount)) * 100
+	queue.mu.Unlock()
+	formattedPercentage := fmt.Sprintf("%.2f%%", percentCompleted)
+	fmt.Printf("[%s] Download Progress: %s\n", formattedTime, formattedPercentage)
 }
 
 // Safely pop next available FilePiece from File Piece Queue
@@ -70,8 +93,6 @@ func (queue *FilePiecesQueue) PopPiece() (FilePiece, error) {
 	var piece FilePiece
 	var err error
 	queue.mu.Lock()
-	// TODO: Implement proper progress logging, including peer count
-	fmt.Println("Pieces Remaining:", len(queue.FilePieces))
 	if len(queue.FilePieces) > 0 {
 		piece, queue.FilePieces = queue.FilePieces[0], queue.FilePieces[1:]
 	} else {
@@ -149,7 +170,9 @@ func ParseTorrentFile(filePath string) (Torrent, *FilePiecesQueue, os.File) {
 	filePieces := torrent.GetFilePieces()
 	filePiecesQueue := FilePiecesQueue{
 		FilePieces: filePieces,
+		TotalPieceCount: len(filePieces),
 	}
+	filePiecesQueue.LogProgress()
 
 	// Initializing the download file
 	file := torrent.InitializeDownloadFile()
