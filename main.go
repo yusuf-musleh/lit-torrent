@@ -13,6 +13,10 @@ func main() {
 	command := os.Args[1]
 
 	if command == "download" {
+		if len(os.Args) != 3 {
+			fmt.Println("No .torrent file arg provided")
+			os.Exit(1)
+		}
 		torrent, filePiecesQueue, file := T.ParseTorrentFile(os.Args[2])
 		defer file.Close()
 
