@@ -12,11 +12,13 @@ import (
 	"strconv"
 	"sync"
 	"errors"
+	"time"
 
 	bencode "github.com/jackpal/bencode-go"
 )
 
 const BLOCK_SIZE = 16384 // 16kiB
+const TIME_FORMAT = "2006-01-02 15:04:05"
 
 type FilePiece struct {
 	Index			int
@@ -61,8 +63,36 @@ func (fp *FilePiece) Reset(queue *FilePiecesQueue) FilePiece {
 }
 
 type FilePiecesQueue struct {
-	mu 			sync.Mutex
-	FilePieces	[]FilePiece
+	mu 				*sync.Mutex
+	FilePieces		[]FilePiece
+	TotalPieceCount	int
+	Completed 		int
+}
+
+// Safely increments the counter for pieces download complete
+func (queue *FilePiecesQueue) IncrementCompleted() {
+	queue.mu.Lock()
+	queue.Completed += 1
+	queue.mu.Unlock()
+}
+
+// Safely log the current progress and peer count of the download
+func (queue *FilePiecesQueue) LogProgress(pc *utils.PeerCount) {
+	now := time.Now()
+	formattedTime := now.Format(TIME_FORMAT)
+	queue.mu.Lock()
+	completed := float64(queue.Completed)
+	percentCompleted := (completed / float64(queue.TotalPieceCount)) * 100
+	queue.mu.Unlock()
+	formattedPercentage := fmt.Sprintf("%.2f%%", percentCompleted)
+	currentPeerCount := 0
+	if pc != nil {
+		currentPeerCount = pc.GetCount()
+	}
+	fmt.Printf(
+		"[%s] Download Progress: %s, Peers: %d\n",
+		formattedTime, formattedPercentage, currentPeerCount,
+	)
 }
 
 // Safely pop next available FilePiece from File Piece Queue
@@ -70,8 +100,6 @@ func (queue *FilePiecesQueue) PopPiece() (FilePiece, error) {
 	var piece FilePiece
 	var err error
 	queue.mu.Lock()
-	// TODO: Implement proper progress logging, including peer count
-	fmt.Println("Pieces Remaining:", len(queue.FilePieces))
 	if len(queue.FilePieces) > 0 {
 		piece, queue.FilePieces = queue.FilePieces[0], queue.FilePieces[1:]
 	} else {
@@ -118,10 +146,11 @@ func (t *Torrent) GenerateInfoHashSHA1() {
     t.InfoHash = infoHash
 }
 
-// Decode .torrent file and populate its values in Torrent struct
-// and build queue for file pieces that need to be downloaded, and
-// initializes the download file to write to with downloaded data
-func ParseTorrentFile(filePath string) (Torrent, *FilePiecesQueue, os.File) {
+// This function does alot of the initial heavy lifting:
+//   - Decodes .torrent file and populate its values in Torrent struct
+//   - Builds queue for file pieces that need to be downloaded
+//   - Initializes the download file to write to with downloaded data
+func ParseTorrentFile(filePath string) (Torrent, FilePiecesQueue, os.File) {
 	torrentFile, err := os.Open(filePath)
 	if err != nil {
 		fmt.Println(err)
@@ -148,13 +177,16 @@ func ParseTorrentFile(filePath string) (Torrent, *FilePiecesQueue, os.File) {
 	// Build queue for pieces that need to be downloaded
 	filePieces := torrent.GetFilePieces()
 	filePiecesQueue := FilePiecesQueue{
+		mu: &sync.Mutex{},
 		FilePieces: filePieces,
+		TotalPieceCount: len(filePieces),
 	}
+	filePiecesQueue.LogProgress(nil)
 
 	// Initializing the download file
 	file := torrent.InitializeDownloadFile()
 
-	return torrent, &filePiecesQueue, file
+	return torrent, filePiecesQueue, file
 }
 
 // Initialize file to download to with the appropriate length
