@@ -2,6 +2,7 @@ package peers
 
 import (
 	T "github.com/yusuf-musleh/lit-torrent/torrent"
+	"github.com/yusuf-musleh/lit-torrent/utils"
 
 	"bytes"
 	"encoding/binary"
@@ -105,7 +106,7 @@ func (p *Peer) GetConnection() net.Conn {
 func (p *Peer) SendMessageBytes(msgBytes []byte) error {
 	_, err := p.GetConnection().Write(msgBytes)
 	if err != nil {
-		p.Connection.State = DISCONNECTED
+		p.Disconnect()
 		return err
 	}
 
@@ -137,7 +138,7 @@ func (p *Peer) PerformHandshake(infoHash [20]byte, peerId string) error {
 	response := make([]byte, READ_BUFFER_SIZE)
 	numBytesRecieved, readErr := p.GetConnection().Read(response)
 	if readErr != nil {
-		p.Connection.State = DISCONNECTED
+		p.Disconnect()
 		return readErr
 	}
 
@@ -177,7 +178,7 @@ func (p *Peer) Interested() {
 
 	err := p.SendMessage(interested)
 	if err != nil {
-		p.Connection.State = DISCONNECTED
+		p.Disconnect()
 	} else {
 		p.Connection.State = INTERESTED
 	}
@@ -193,7 +194,7 @@ func (p *Peer) Request(index int, begin int, blockSize int) error {
 
 	err := p.SendMessage(request)
 	if err != nil {
-		p.Connection.State = DISCONNECTED
+		p.Disconnect()
 	}
 	return err
 }
@@ -218,13 +219,19 @@ func (p *Peer) DownloadBlock(recvMessage Message, response []byte) ([]byte, erro
 		response := make([]byte, READ_BUFFER_SIZE)
 		n, readErr := p.GetConnection().Read(response)
 		if readErr != nil {
-			p.Connection.State = DISCONNECTED
+			p.Disconnect()
 			return nil, readErr
 		}
 		block = append(block, response[:n]...)
 		blockBytes += n
 	}
 	return block, nil
+}
+
+// Set the connection state when disconnect + perform any other
+// actions needed on disconnect
+func (p *Peer) Disconnect() {
+	p.Connection.State = DISCONNECTED
 }
 
 // Establish TCP connection with Peer for communication
@@ -234,6 +241,7 @@ func (p *Peer) Connect(
 	wg *sync.WaitGroup,
 	filePieceQueue *T.FilePiecesQueue,
 	file *os.File,
+	peerCount *utils.PeerCount,
 ) {
 
 	defer wg.Done()
@@ -242,8 +250,12 @@ func (p *Peer) Connect(
 	if connErr != nil {
 		return
 	}
-
 	defer conn.Close()
+
+	// Increment the peer count and decrement when
+	// when the connect function terminates
+	peerCount.Increment()
+	defer peerCount.Decrement()
 
 	// Initialize Peer Connection and begin Handshaking Protocol
 	p.Connection = PeerConnection{
@@ -254,7 +266,7 @@ func (p *Peer) Connect(
 	// Perform Handshake with Peer
 	handshakeErr := p.PerformHandshake(infoHash, peerId)
 	if handshakeErr != nil {
-		p.Connection.State = DISCONNECTED
+		p.Disconnect()
 	} else {
 		p.Connection.State = CONNECTED
 	}
@@ -275,7 +287,7 @@ func (p *Peer) Connect(
 		if p.Connection.State == UNCHOKED && requestFilePiece.Length == 0 {
 			nextFilePiece, popErr := filePieceQueue.PopPiece()
 			if popErr != nil {
-				p.Connection.State = DISCONNECTED
+				p.Disconnect()
 				break
 			}
 			requestFilePiece = nextFilePiece
@@ -296,7 +308,7 @@ func (p *Peer) Connect(
 		response := make([]byte, READ_BUFFER_SIZE)
 		n, readErr := p.GetConnection().Read(response)
 		if readErr != nil {
-			p.Connection.State = DISCONNECTED
+			p.Disconnect()
 			// Reset FilePiece if it fails while being processed
 			if requestFilePiece.Length != 0 {
 				requestFilePiece = requestFilePiece.Reset(filePieceQueue)
@@ -351,7 +363,7 @@ func (p *Peer) Connect(
 						continue
 					}
 					filePieceQueue.IncrementCompleted()
-					filePieceQueue.LogProgress()
+					filePieceQueue.LogProgress(peerCount)
 				} else {
 					// Discard the file piece content, put it back in the queue
 					requestFilePiece = requestFilePiece.Reset(filePieceQueue)
@@ -365,8 +377,8 @@ func (p *Peer) Connect(
 	}
 }
 
-// Parse Tracker response and extract peers information
-func ParsePeersFromTracker(trackerData map[string]interface{}) ([]Peer) {
+// Parse Tracker response, extract peers information, initialize peer count
+func ParsePeersFromTracker(trackerData map[string]interface{}) ([]Peer, utils.PeerCount) {
 	peers := []Peer{}
 	peerInterfaces, ok := trackerData["peers"].([]interface{})
 
@@ -395,5 +407,11 @@ func ParsePeersFromTracker(trackerData map[string]interface{}) ([]Peer) {
 		}
 		peers = append(peers, peer)
 	}
-	return peers
+
+	initialPeerCount := utils.PeerCount{
+		Mu: &sync.Mutex{},
+		Count: 0,
+	}
+
+	return peers, initialPeerCount
 }

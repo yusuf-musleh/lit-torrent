@@ -24,7 +24,7 @@ func main() {
 		for len(filePiecesQueue.FilePieces) > 0 {
 			// Announce to Tracker to get available peers
 			_, data := torrent.AnnounceToTracker()
-			peers := P.ParsePeersFromTracker(data)
+			peers, currentPeerCount := P.ParsePeersFromTracker(data)
 
 			// Establish connections to all available Peers in parallel
 			fmt.Println("Connecting to peers...")
@@ -32,7 +32,12 @@ func main() {
 			for i := range peers {
 				wg.Add(1)
 				go peers[i].Connect(
-					torrent.InfoHash, torrent.PeerId, &wg, filePiecesQueue, &file,
+					torrent.InfoHash,
+					torrent.PeerId,
+					&wg,
+					&filePiecesQueue,
+					&file,
+					&currentPeerCount,
 				)
 			}
 

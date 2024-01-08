@@ -63,7 +63,7 @@ func (fp *FilePiece) Reset(queue *FilePiecesQueue) FilePiece {
 }
 
 type FilePiecesQueue struct {
-	mu 				sync.Mutex
+	mu 				*sync.Mutex
 	FilePieces		[]FilePiece
 	TotalPieceCount	int
 	Completed 		int
@@ -76,8 +76,8 @@ func (queue *FilePiecesQueue) IncrementCompleted() {
 	queue.mu.Unlock()
 }
 
-// Safely log the current progress of the download
-func (queue *FilePiecesQueue) LogProgress() {
+// Safely log the current progress and peer count of the download
+func (queue *FilePiecesQueue) LogProgress(pc *utils.PeerCount) {
 	now := time.Now()
 	formattedTime := now.Format(TIME_FORMAT)
 	queue.mu.Lock()
@@ -85,7 +85,14 @@ func (queue *FilePiecesQueue) LogProgress() {
 	percentCompleted := (completed / float64(queue.TotalPieceCount)) * 100
 	queue.mu.Unlock()
 	formattedPercentage := fmt.Sprintf("%.2f%%", percentCompleted)
-	fmt.Printf("[%s] Download Progress: %s\n", formattedTime, formattedPercentage)
+	currentPeerCount := 0
+	if pc != nil {
+		currentPeerCount = pc.GetCount()
+	}
+	fmt.Printf(
+		"[%s] Download Progress: %s, Peers: %d\n",
+		formattedTime, formattedPercentage, currentPeerCount,
+	)
 }
 
 // Safely pop next available FilePiece from File Piece Queue
@@ -139,10 +146,11 @@ func (t *Torrent) GenerateInfoHashSHA1() {
     t.InfoHash = infoHash
 }
 
-// Decode .torrent file and populate its values in Torrent struct
-// and build queue for file pieces that need to be downloaded, and
-// initializes the download file to write to with downloaded data
-func ParseTorrentFile(filePath string) (Torrent, *FilePiecesQueue, os.File) {
+// This function does alot of the initial heavy lifting:
+//   - Decodes .torrent file and populate its values in Torrent struct
+//   - Builds queue for file pieces that need to be downloaded
+//   - Initializes the download file to write to with downloaded data
+func ParseTorrentFile(filePath string) (Torrent, FilePiecesQueue, os.File) {
 	torrentFile, err := os.Open(filePath)
 	if err != nil {
 		fmt.Println(err)
@@ -169,15 +177,16 @@ func ParseTorrentFile(filePath string) (Torrent, *FilePiecesQueue, os.File) {
 	// Build queue for pieces that need to be downloaded
 	filePieces := torrent.GetFilePieces()
 	filePiecesQueue := FilePiecesQueue{
+		mu: &sync.Mutex{},
 		FilePieces: filePieces,
 		TotalPieceCount: len(filePieces),
 	}
-	filePiecesQueue.LogProgress()
+	filePiecesQueue.LogProgress(nil)
 
 	// Initializing the download file
 	file := torrent.InitializeDownloadFile()
 
-	return torrent, &filePiecesQueue, file
+	return torrent, filePiecesQueue, file
 }
 
 // Initialize file to download to with the appropriate length
