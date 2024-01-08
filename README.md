@@ -9,7 +9,8 @@ Basic BitTorrent client written in Go that's pretty lit. 🔥
 1. Run the download command with a .torrent file: `./lit-torrent download [TORRENT].torrent`
 1. Enjoy watching the download progress :D
 
-<!-- Insert screenshot here -->
+<img width="639" alt="Screen Shot 2024-01-08 at 4 48 10 PM" src="https://github.com/yusuf-musleh/lit-torrent/assets/6829768/1a98b063-8299-4ece-a6d2-476f0366b663">
+
 
 ### Implementation Details
 
